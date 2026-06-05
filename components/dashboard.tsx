@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -10,14 +9,14 @@ import { AgentChat } from "@/components/agent-chat"
 import { MVPContextForm } from "@/components/mvp-context-form"
 import { WorkflowPanel } from "@/components/workflow-panel"
 import { UserSettings } from "@/components/user-settings"
-import { useAppStore } from "@/lib/store"
-import { AGENTS as agents } from "@/lib/agents"
+import { AGENTS } from "@/lib/agents"
 import { 
   getChats, 
   getApprovals, 
   getWorkflows,
   getMVPContext,
-  resolveApproval 
+  resolveApproval,
+  createChat
 } from "@/app/actions/actions"
 import { 
   Bot, 
@@ -27,9 +26,14 @@ import {
   Plus,
   Check,
   X,
-  Clock
+  Clock,
+  Users,
+  LayoutDashboard,
+  Settings,
+  History,
+  CheckSquare
 } from "lucide-react"
-import type { Agent, Chat, Approval, Workflow, MVPContext } from "@/lib/types"
+import type { Agent, Chat, Approval, Workflow, MVPContext, ActiveAgent, AgentStatus } from "@/lib/types"
 
 interface DashboardProps {
   user: {
@@ -39,21 +43,41 @@ interface DashboardProps {
   }
 }
 
+type ViewType = 'chat' | 'agents' | 'workflows' | 'mvp' | 'approvals' | 'history' | 'settings'
+
 export function Dashboard({ user }: DashboardProps) {
-  const [activeTab, setActiveTab] = useState("agents")
-  const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null)
-  const [selectedChat, setSelectedChat] = useState<Chat | null>(null)
+  const [activeView, setActiveView] = useState<ViewType>('agents')
+  const [selectedAgents, setSelectedAgents] = useState<Agent[]>([])
+  const [currentChatId, setCurrentChatId] = useState<number | null>(null)
   const [chats, setChats] = useState<Chat[]>([])
   const [approvals, setApprovals] = useState<Approval[]>([])
   const [workflows, setWorkflows] = useState<Workflow[]>([])
   const [mvpContext, setMvpContext] = useState<MVPContext | null>(null)
   const [loading, setLoading] = useState(true)
+  const [activeAgents, setActiveAgents] = useState<ActiveAgent[]>([])
 
   const pendingApprovals = approvals.filter(a => a.status === "pending")
 
   useEffect(() => {
     loadData()
   }, [])
+
+  // Update active agents based on selected agents and workflows
+  useEffect(() => {
+    const agents: ActiveAgent[] = AGENTS.map(agent => {
+      const inWorkflow = workflows.some(w => w.status === 'in_progress')
+      let status: AgentStatus = 'idle'
+      
+      if (selectedAgents.some(a => a.id === agent.id)) {
+        status = 'active'
+      } else if (inWorkflow) {
+        status = 'pending'
+      }
+      
+      return { agent, status }
+    })
+    setActiveAgents(agents)
+  }, [selectedAgents, workflows])
 
   const loadData = async () => {
     try {
@@ -63,10 +87,10 @@ export function Dashboard({ user }: DashboardProps) {
         getWorkflows(),
         getMVPContext()
       ])
-      setChats(chatsData)
-      setApprovals(approvalsData)
-      setWorkflows(workflowsData)
-      setMvpContext(mvpData)
+      setChats(chatsData as Chat[])
+      setApprovals(approvalsData as Approval[])
+      setWorkflows(workflowsData as Workflow[])
+      setMvpContext(mvpData as MVPContext | null)
     } catch (error) {
       console.error("Error loading data:", error)
     } finally {
@@ -74,39 +98,39 @@ export function Dashboard({ user }: DashboardProps) {
     }
   }
 
-  const handleSelectAgent = (agent: Agent) => {
-    setSelectedAgent(agent)
-    setSelectedChat(null)
-    setActiveTab("chat")
-  }
-
-  const handleNewChat = () => {
-    setSelectedAgent(null)
-    setSelectedChat(null)
-    setActiveTab("agents")
-  }
-
-  const handleSelectChat = (chat: Chat) => {
-    const agent = agents.find(a => a.id === chat.agentId)
-    if (agent) {
-      setSelectedAgent(agent)
-      setSelectedChat(chat)
-      setActiveTab("chat")
+  const handleStartChat = async (agents: Agent[]) => {
+    try {
+      const agentIds = agents.map(a => a.id)
+      const chatId = await createChat(agentIds)
+      setSelectedAgents(agents)
+      setCurrentChatId(chatId)
+      setActiveView('chat')
+      await loadData()
+    } catch (error) {
+      console.error("Error creating chat:", error)
     }
   }
 
-  const handleChatCreated = (chat: Chat) => {
-    setChats(prev => [chat, ...prev])
-    setSelectedChat(chat)
+  const handleNewChat = () => {
+    setSelectedAgents([])
+    setCurrentChatId(null)
+    setActiveView('agents')
   }
 
-  const handleApprovalAction = async (approvalId: string, approved: boolean) => {
+  const handleSelectChat = (chat: Chat) => {
+    const agents = AGENTS.filter(a => chat.agentIds.includes(a.id))
+    setSelectedAgents(agents)
+    setCurrentChatId(chat.id)
+    setActiveView('chat')
+  }
+
+  const handleApprovalAction = async (approvalId: number, approved: boolean) => {
     try {
       await resolveApproval(approvalId, approved)
       setApprovals(prev => 
         prev.map(a => 
           a.id === approvalId 
-            ? { ...a, status: approved ? "approved" : "rejected", resolvedAt: new Date() }
+            ? { ...a, status: approved ? "approved" : "rejected" as const, updatedAt: new Date() }
             : a
         )
       )
@@ -119,204 +143,417 @@ export function Dashboard({ user }: DashboardProps) {
     setMvpContext(context)
   }
 
+  const getStatusColor = (status: AgentStatus) => {
+    switch (status) {
+      case 'active': return 'bg-emerald-500'
+      case 'running': return 'bg-amber-500'
+      case 'pending': return 'bg-slate-400'
+      default: return 'bg-slate-600'
+    }
+  }
+
+  const getStatusLabel = (status: AgentStatus) => {
+    switch (status) {
+      case 'active': return 'Activo'
+      case 'running': return 'En ejecucion'
+      case 'pending': return 'Pendiente'
+      default: return 'Inactivo'
+    }
+  }
+
   return (
-    <div className="flex flex-col h-screen bg-background">
-      {/* Header */}
-      <header className="border-b border-border bg-card px-6 py-4">
-        <div className="flex items-center justify-between">
+    <div className="flex h-screen bg-[#0a1929]">
+      {/* Sidebar - Navigation */}
+      <aside className="w-64 bg-[#0f2744] border-r border-[#1e3a5f] flex flex-col">
+        {/* Logo */}
+        <div className="p-4 border-b border-[#1e3a5f]">
           <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-lg bg-primary flex items-center justify-center">
-              <Bot className="h-6 w-6 text-primary-foreground" />
+            <div className="h-10 w-10 rounded-lg bg-emerald-500 flex items-center justify-center">
+              <Bot className="h-6 w-6 text-white" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-foreground">ScrumDev AI</h1>
-              <p className="text-sm text-muted-foreground">Sistema de Agentes Inteligentes</p>
+              <h1 className="text-lg font-bold text-white">ScrumDev AI</h1>
             </div>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="text-right">
-              <p className="text-sm font-medium text-foreground">{user.name}</p>
-              <p className="text-xs text-muted-foreground">{user.email}</p>
+        </div>
+
+        {/* New Chat Button */}
+        <div className="p-4">
+          <Button 
+            onClick={handleNewChat}
+            className="w-full bg-emerald-500 hover:bg-emerald-600 text-white"
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            Nuevo Chat
+          </Button>
+        </div>
+
+        {/* Navigation */}
+        <nav className="flex-1 px-2">
+          <div className="space-y-1">
+            <NavButton 
+              icon={<MessageSquare className="h-4 w-4" />} 
+              label="Chat" 
+              active={activeView === 'chat'}
+              onClick={() => setActiveView('chat')}
+            />
+            <NavButton 
+              icon={<GitBranch className="h-4 w-4" />} 
+              label="Workflows" 
+              active={activeView === 'workflows'}
+              onClick={() => setActiveView('workflows')}
+            />
+            <NavButton 
+              icon={<Users className="h-4 w-4" />} 
+              label="Agentes" 
+              active={activeView === 'agents'}
+              onClick={() => setActiveView('agents')}
+            />
+            <NavButton 
+              icon={<CheckSquare className="h-4 w-4" />} 
+              label="Aprobaciones" 
+              active={activeView === 'approvals'}
+              badge={pendingApprovals.length > 0 ? pendingApprovals.length : undefined}
+              onClick={() => setActiveView('approvals')}
+            />
+            <NavButton 
+              icon={<History className="h-4 w-4" />} 
+              label="Historial" 
+              active={activeView === 'history'}
+              onClick={() => setActiveView('history')}
+            />
+            <NavButton 
+              icon={<Settings className="h-4 w-4" />} 
+              label="Configuracion" 
+              active={activeView === 'settings'}
+              onClick={() => setActiveView('settings')}
+            />
+          </div>
+        </nav>
+
+        {/* User Info */}
+        <div className="p-4 border-t border-[#1e3a5f]">
+          <div className="flex items-center gap-3">
+            <div className="h-8 w-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400 text-sm font-medium">
+              {user.name.charAt(0).toUpperCase()}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-white truncate">{user.name}</p>
+              <p className="text-xs text-slate-400 truncate">{user.email}</p>
             </div>
             <UserSettings user={user} />
           </div>
         </div>
-      </header>
+      </aside>
 
-      {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar */}
-        <aside className="w-64 border-r border-border bg-card flex flex-col">
-          <div className="p-4">
-            <Button 
-              onClick={handleNewChat}
-              className="w-full bg-primary hover:bg-primary/90"
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              Nuevo Chat
-            </Button>
-          </div>
-
-          <ScrollArea className="flex-1 px-4">
-            <div className="space-y-2">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-                Historial de Chats
-              </p>
-              {chats.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-2">
-                  No hay conversaciones aun
-                </p>
-              ) : (
-                chats.map((chat) => {
-                  const agent = agents.find(a => a.id === chat.agentId)
-                  return (
-                    <button
-                      key={chat.id}
-                      onClick={() => handleSelectChat(chat)}
-                      className={`w-full text-left p-3 rounded-lg transition-colors ${
-                        selectedChat?.id === chat.id
-                          ? "bg-primary/20 border border-primary/50"
-                          : "hover:bg-muted"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <div 
-                          className="h-8 w-8 rounded-full flex items-center justify-center text-white text-xs"
-                          style={{ backgroundColor: agent?.color || "#666" }}
-                        >
-                          {agent?.name.charAt(0) || "?"}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-foreground truncate">
-                            {chat.title || agent?.name || "Chat"}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {new Date(chat.createdAt).toLocaleDateString()}
-                          </p>
-                        </div>
-                      </div>
-                    </button>
-                  )
-                })
-              )}
-            </div>
-          </ScrollArea>
-
-          {/* Pending Approvals */}
-          {pendingApprovals.length > 0 && (
-            <div className="p-4 border-t border-border">
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-xs font-medium text-muted-foreground uppercase">
-                  Aprobaciones
-                </p>
-                <Badge variant="destructive" className="text-xs">
-                  {pendingApprovals.length}
-                </Badge>
-              </div>
-              <ScrollArea className="max-h-40">
-                {pendingApprovals.map((approval) => (
-                  <div 
-                    key={approval.id}
-                    className="p-2 mb-2 bg-muted/50 rounded-lg text-sm"
-                  >
-                    <p className="font-medium text-foreground text-xs mb-1 line-clamp-2">
-                      {approval.title}
-                    </p>
-                    <div className="flex gap-1">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-6 text-xs flex-1 bg-primary/20 hover:bg-primary/30 text-primary border-primary/50"
-                        onClick={() => handleApprovalAction(approval.id, true)}
-                      >
-                        <Check className="h-3 w-3 mr-1" />
-                        Aprobar
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-6 text-xs flex-1 hover:bg-destructive/20 text-destructive border-destructive/50"
-                        onClick={() => handleApprovalAction(approval.id, false)}
-                      >
-                        <X className="h-3 w-3 mr-1" />
-                        Rechazar
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </ScrollArea>
-            </div>
+      {/* Main Content Area */}
+      <main className="flex-1 flex overflow-hidden">
+        {/* Central Panel */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {activeView === 'agents' && (
+            <AgentGrid agents={AGENTS} onStartChat={handleStartChat} />
           )}
-        </aside>
-
-        {/* Main Panel */}
-        <main className="flex-1 flex flex-col overflow-hidden">
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col">
-            <div className="border-b border-border px-6 py-2 bg-card">
-              <TabsList className="bg-muted/50">
-                <TabsTrigger value="agents" className="flex items-center gap-2">
-                  <Bot className="h-4 w-4" />
-                  Agentes
-                </TabsTrigger>
-                <TabsTrigger value="chat" className="flex items-center gap-2">
-                  <MessageSquare className="h-4 w-4" />
-                  Chat
-                </TabsTrigger>
-                <TabsTrigger value="mvp" className="flex items-center gap-2">
-                  <Lightbulb className="h-4 w-4" />
-                  Contexto MVP
-                </TabsTrigger>
-                <TabsTrigger value="workflow" className="flex items-center gap-2">
-                  <GitBranch className="h-4 w-4" />
-                  Workflow
-                </TabsTrigger>
-              </TabsList>
-            </div>
-
-            <TabsContent value="agents" className="flex-1 overflow-auto p-6 m-0">
-              <AgentGrid 
-                agents={agents} 
-                onSelectAgent={handleSelectAgent}
-              />
-            </TabsContent>
-
-            <TabsContent value="chat" className="flex-1 overflow-hidden p-0 m-0">
-              {selectedAgent ? (
+          
+          {activeView === 'chat' && (
+            <div className="flex-1 flex flex-col">
+              {selectedAgents.length > 0 && currentChatId ? (
                 <AgentChat 
-                  agent={selectedAgent}
-                  existingChat={selectedChat}
-                  onChatCreated={handleChatCreated}
+                  agents={selectedAgents}
+                  chatId={currentChatId}
                   onClose={handleNewChat}
                 />
               ) : (
-                <div className="flex-1 flex items-center justify-center text-muted-foreground">
+                <div className="flex-1 flex items-center justify-center text-slate-400">
                   <div className="text-center">
                     <Bot className="h-16 w-16 mx-auto mb-4 opacity-50" />
-                    <p className="text-lg font-medium">Selecciona un agente</p>
-                    <p className="text-sm">
-                      Ve a la pestana de Agentes para iniciar una conversacion
+                    <p className="text-lg font-medium text-white">Chat con ScrumDev AI</p>
+                    <p className="text-sm mt-2">
+                      Hola! Soy ScrumDev AI. En que puedo ayudarte hoy?
                     </p>
+                    <Button 
+                      onClick={handleNewChat}
+                      className="mt-4 bg-emerald-500 hover:bg-emerald-600"
+                    >
+                      Seleccionar Agentes
+                    </Button>
                   </div>
                 </div>
               )}
-            </TabsContent>
+            </div>
+          )}
 
-            <TabsContent value="mvp" className="flex-1 overflow-auto p-6 m-0">
-              <MVPContextForm 
-                existingContext={mvpContext}
-                onSave={handleMvpSaved}
-              />
-            </TabsContent>
-
-            <TabsContent value="workflow" className="flex-1 overflow-auto p-6 m-0">
+          {activeView === 'workflows' && (
+            <div className="flex-1 overflow-auto p-6">
               <WorkflowPanel 
                 workflows={workflows}
                 onWorkflowsUpdate={setWorkflows}
               />
-            </TabsContent>
-          </Tabs>
-        </main>
-      </div>
+            </div>
+          )}
+
+          {activeView === 'mvp' && (
+            <div className="flex-1 overflow-auto p-6">
+              <MVPContextForm 
+                existingContext={mvpContext}
+                onSave={handleMvpSaved}
+              />
+            </div>
+          )}
+
+          {activeView === 'approvals' && (
+            <div className="flex-1 overflow-auto p-6">
+              <h2 className="text-2xl font-bold text-white mb-6">Aprobaciones</h2>
+              {approvals.length === 0 ? (
+                <p className="text-slate-400">No hay aprobaciones pendientes</p>
+              ) : (
+                <div className="space-y-4">
+                  {approvals.map(approval => (
+                    <div key={approval.id} className="bg-[#0f2744] border border-[#1e3a5f] rounded-lg p-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="font-medium text-white">{approval.title}</h3>
+                          {approval.description && (
+                            <p className="text-sm text-slate-400 mt-1">{approval.description}</p>
+                          )}
+                          <Badge 
+                            className={`mt-2 ${
+                              approval.status === 'pending' ? 'bg-amber-500/20 text-amber-400' :
+                              approval.status === 'approved' ? 'bg-emerald-500/20 text-emerald-400' :
+                              'bg-red-500/20 text-red-400'
+                            }`}
+                          >
+                            {approval.status === 'pending' ? 'Pendiente' : 
+                             approval.status === 'approved' ? 'Aprobado' : 'Rechazado'}
+                          </Badge>
+                        </div>
+                        {approval.status === 'pending' && (
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => handleApprovalAction(approval.id, true)}
+                              className="bg-emerald-500 hover:bg-emerald-600"
+                            >
+                              <Check className="h-4 w-4 mr-1" />
+                              Aprobar
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleApprovalAction(approval.id, false)}
+                              className="border-red-500/50 text-red-400 hover:bg-red-500/20"
+                            >
+                              <X className="h-4 w-4 mr-1" />
+                              Rechazar
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeView === 'history' && (
+            <div className="flex-1 overflow-auto p-6">
+              <h2 className="text-2xl font-bold text-white mb-6">Historial de Chats</h2>
+              {chats.length === 0 ? (
+                <p className="text-slate-400">No hay conversaciones guardadas</p>
+              ) : (
+                <div className="space-y-2">
+                  {chats.map(chat => (
+                    <button
+                      key={chat.id}
+                      onClick={() => handleSelectChat(chat)}
+                      className="w-full text-left p-4 bg-[#0f2744] border border-[#1e3a5f] rounded-lg hover:border-emerald-500/50 transition-all"
+                    >
+                      <p className="font-medium text-white">{chat.title || 'Chat sin titulo'}</p>
+                      <p className="text-xs text-slate-400 mt-1">
+                        {chat.agentIds.length} agente(s) - {new Date(chat.createdAt).toLocaleDateString()}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeView === 'settings' && (
+            <div className="flex-1 overflow-auto p-6">
+              <h2 className="text-2xl font-bold text-white mb-6">Configuracion</h2>
+              <div className="bg-[#0f2744] border border-[#1e3a5f] rounded-lg p-6">
+                <h3 className="font-medium text-white mb-4">Contexto MVP</h3>
+                <MVPContextForm 
+                  existingContext={mvpContext}
+                  onSave={handleMvpSaved}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Right Side Panels */}
+        <aside className="w-72 bg-[#0f2744] border-l border-[#1e3a5f] flex flex-col overflow-hidden">
+          {/* Workflows Activos */}
+          <div className="p-4 border-b border-[#1e3a5f]">
+            <h3 className="text-sm font-semibold text-white mb-3">Workflows Activos</h3>
+            <ScrollArea className="max-h-40">
+              {workflows.length === 0 ? (
+                <p className="text-xs text-slate-400">No hay workflows activos</p>
+              ) : (
+                <div className="space-y-2">
+                  {workflows.slice(0, 3).map(workflow => (
+                    <div key={workflow.id} className="bg-[#162d4a] rounded-lg p-3">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-medium text-white">{workflow.workflowId}</span>
+                        <span className="text-xs text-slate-400">
+                          {new Date(workflow.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-300">{workflow.title}</p>
+                      <div className="flex items-center gap-2 mt-2">
+                        <span className={`text-xs ${
+                          workflow.status === 'in_progress' ? 'text-amber-400' :
+                          workflow.status === 'completed' ? 'text-emerald-400' :
+                          'text-slate-400'
+                        }`}>
+                          {workflow.status === 'in_progress' ? 'En ejecucion' :
+                           workflow.status === 'completed' ? 'Completado' :
+                           workflow.status === 'failed' ? 'Fallido' : 'Pendiente'}
+                        </span>
+                        {workflow.progress > 0 && (
+                          <div className="flex-1 bg-[#1e3a5f] rounded-full h-1.5">
+                            <div 
+                              className="bg-amber-500 h-1.5 rounded-full"
+                              style={{ width: `${workflow.progress}%` }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button className="text-xs text-emerald-400 mt-2 hover:underline">
+                Ver todos los workflows
+              </button>
+            </ScrollArea>
+          </div>
+
+          {/* Agentes Activos */}
+          <div className="p-4 border-b border-[#1e3a5f] flex-1 overflow-hidden">
+            <h3 className="text-sm font-semibold text-white mb-3">Agentes Activos</h3>
+            <ScrollArea className="h-full">
+              <div className="space-y-2">
+                {activeAgents.map(({ agent, status }) => (
+                  <div key={agent.id} className="flex items-center gap-2 py-2">
+                    <div 
+                      className="w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs"
+                      style={{ backgroundColor: agent.color }}
+                    >
+                      {agent.name.charAt(0)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-white truncate">{agent.name}</p>
+                      <p className="text-xs text-slate-400 truncate">{agent.description.slice(0, 20)}...</p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className={`text-xs ${
+                        status === 'active' ? 'text-emerald-400' :
+                        status === 'running' ? 'text-amber-400' :
+                        'text-slate-400'
+                      }`}>
+                        {getStatusLabel(status)}
+                      </span>
+                      <div className={`w-2 h-2 rounded-full ${getStatusColor(status)}`} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
+          </div>
+
+          {/* Aprobaciones Pendientes */}
+          <div className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-white">Aprobaciones Pendientes</h3>
+              {pendingApprovals.length > 0 && (
+                <Badge className="bg-amber-500/20 text-amber-400 text-xs">
+                  {pendingApprovals.length}
+                </Badge>
+              )}
+            </div>
+            <ScrollArea className="max-h-48">
+              {pendingApprovals.length === 0 ? (
+                <p className="text-xs text-slate-400">No hay aprobaciones pendientes</p>
+              ) : (
+                <div className="space-y-2">
+                  {pendingApprovals.slice(0, 2).map(approval => (
+                    <div key={approval.id} className="bg-[#162d4a] rounded-lg p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-xs text-white font-medium line-clamp-2">{approval.title}</p>
+                        <Clock className="w-3 h-3 text-slate-400 flex-shrink-0" />
+                      </div>
+                      <div className="flex gap-1">
+                        <Button
+                          size="sm"
+                          onClick={() => handleApprovalAction(approval.id, true)}
+                          className="h-6 text-xs flex-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400"
+                        >
+                          Aprobar
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleApprovalAction(approval.id, false)}
+                          className="h-6 text-xs flex-1 border-red-500/30 text-red-400 hover:bg-red-500/20"
+                        >
+                          Rechazar
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </ScrollArea>
+          </div>
+        </aside>
+      </main>
     </div>
+  )
+}
+
+// Navigation Button Component
+function NavButton({ 
+  icon, 
+  label, 
+  active, 
+  badge,
+  onClick 
+}: { 
+  icon: React.ReactNode
+  label: string
+  active: boolean
+  badge?: number
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
+        active 
+          ? 'bg-emerald-500/20 text-emerald-400' 
+          : 'text-slate-300 hover:bg-[#162d4a] hover:text-white'
+      }`}
+    >
+      {icon}
+      <span className="text-sm">{label}</span>
+      {badge !== undefined && badge > 0 && (
+        <Badge className="ml-auto bg-red-500 text-white text-xs h-5 min-w-5 flex items-center justify-center">
+          {badge}
+        </Badge>
+      )}
+    </button>
   )
 }
