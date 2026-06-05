@@ -1,11 +1,11 @@
-import { pgTable, text, timestamp, integer } from 'drizzle-orm/pg-core'
+import { pgTable, text, timestamp, integer, boolean, serial } from 'drizzle-orm/pg-core'
 
 // Better Auth tables
 export const user = pgTable('user', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   email: text('email').notNull().unique(),
-  emailVerified: timestamp('emailVerified'),
+  emailVerified: boolean('emailVerified').default(false),
   image: text('image'),
   createdAt: timestamp('createdAt').defaultNow(),
   updatedAt: timestamp('updatedAt').defaultNow(),
@@ -52,30 +52,29 @@ export const verification = pgTable('verification', {
 })
 
 // App tables
-export const chats = pgTable('chats', {
-  id: text('id').primaryKey(),
+export const chats = pgTable('chat', {
+  id: serial('id').primaryKey(),
   userId: text('userId').notNull(),
-  agentId: text('agentId').notNull(),
+  agentIds: text('agentIds').notNull(),
   title: text('title'),
   createdAt: timestamp('createdAt').defaultNow(),
   updatedAt: timestamp('updatedAt').defaultNow(),
 })
 
-export const messages = pgTable('messages', {
-  id: text('id').primaryKey(),
-  chatId: text('chatId').notNull(),
-  userId: text('userId').notNull(),
+export const messages = pgTable('message', {
+  id: serial('id').primaryKey(),
+  chatId: integer('chatId').notNull(),
   role: text('role').notNull(),
   content: text('content').notNull(),
   agentId: text('agentId'),
   createdAt: timestamp('createdAt').defaultNow(),
 })
 
-export const mvpContexts = pgTable('mvp_contexts', {
-  id: text('id').primaryKey(),
+export const mvpContexts = pgTable('mvp_context', {
+  id: serial('id').primaryKey(),
   userId: text('userId').notNull(),
   name: text('name').notNull(),
-  description: text('description'),
+  description: text('description').notNull(),
   targetUsers: text('targetUsers'),
   features: text('features'),
   restrictions: text('restrictions'),
@@ -84,37 +83,37 @@ export const mvpContexts = pgTable('mvp_contexts', {
   updatedAt: timestamp('updatedAt').defaultNow(),
 })
 
-export const approvals = pgTable('approvals', {
-  id: text('id').primaryKey(),
+export const userStories = pgTable('user_story', {
+  id: serial('id').primaryKey(),
+  mvpContextId: integer('mvpContextId').notNull(),
+  title: text('title').notNull(),
+  description: text('description'),
+  acceptanceCriteria: text('acceptanceCriteria'),
+  priority: text('priority').default('medium'),
+  status: text('status').default('pending'),
+  createdAt: timestamp('createdAt').defaultNow(),
+  updatedAt: timestamp('updatedAt').defaultNow(),
+})
+
+export const approvals = pgTable('approval', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  workflowId: integer('workflowId'),
+  title: text('title').notNull(),
+  description: text('description'),
+  status: text('status').default('pending'),
+  createdAt: timestamp('createdAt').defaultNow(),
+  updatedAt: timestamp('updatedAt').defaultNow(),
+})
+
+export const workflows = pgTable('workflow', {
+  id: serial('id').primaryKey(),
   userId: text('userId').notNull(),
   workflowId: text('workflowId').notNull(),
   title: text('title').notNull(),
   description: text('description'),
   status: text('status').default('pending'),
-  createdAt: timestamp('createdAt').defaultNow(),
-  resolvedAt: timestamp('resolvedAt'),
-})
-
-export const workflows = pgTable('workflows', {
-  id: text('id').primaryKey(),
-  userId: text('userId').notNull(),
-  name: text('name').notNull(),
-  description: text('description'),
-  status: text('status').default('pending'),
   progress: integer('progress').default(0),
-  currentPhase: text('currentPhase'),
   createdAt: timestamp('createdAt').defaultNow(),
   updatedAt: timestamp('updatedAt').defaultNow(),
-})
-
-export const workflowSteps = pgTable('workflow_steps', {
-  id: text('id').primaryKey(),
-  workflowId: text('workflowId').notNull(),
-  agentId: text('agentId').notNull(),
-  name: text('name').notNull(),
-  status: text('status').default('pending'),
-  output: text('output'),
-  order: integer('order').notNull(),
-  createdAt: timestamp('createdAt').defaultNow(),
-  completedAt: timestamp('completedAt'),
 })
